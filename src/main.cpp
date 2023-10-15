@@ -95,10 +95,10 @@ Adafruit_USBD_MIDI usb_midi;
 // and attach usb_midi as the transport.
 MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
 
-// Variable that holds the current position in the sequence.
+// Variable that holds the current position in the startup note sequence.
 uint32_t position = 0;
 
-// Store example melody as an array of note values
+// Store startup melody as an array of note values
 #ifdef ATOMS3
 byte note_sequence[] = 
 {
@@ -248,9 +248,61 @@ void setup()
 {
 #ifdef ATOMS3
   AtomLed.begin();
-  AtomLed.drawpix(0x00ff00); // initialize LED to red
+  AtomLed.drawpix(0x00FF00); // initialize LED to red
   AtomLed.setBrightness(50);
   AtomLed.show();
+
+  Serial.begin(115200);
+
+  delay(2000);
+
+  WiFi.mode(WIFI_MODE_STA);
+  Serial.println(WiFi.macAddress()); 
+
+  Serial.println("starting...");
+
+  if(esp_now_init() != ESP_OK) 
+  {
+    Serial.println("Error initializing ESP-Now");
+  }
+  else
+  {
+    esp_now_register_recv_cb(data_receive);
+    Serial.println("ESP-Now OK");
+  }
+
+  pinMode(41, INPUT_PULLUP);
+
+  delay(100);
+
+  if(!digitalRead(41)) // Is button pushed on startup?
+  {
+    AtomLed.drawpix(0x0000FF); // initialize LED to blue
+    AtomLed.show();
+
+    while(!digitalRead(41))
+    {
+      delay(100); // wait for button to be released...
+      Serial.print(".");
+    }
+
+    // Broadcast a message to every device in range
+    uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    esp_now_peer_info_t peerInfo = {};
+    String message = "EMMMA-K";
+    
+    memcpy(&peerInfo.peer_addr, broadcastAddress, 6);
+    if(!esp_now_is_peer_exist(broadcastAddress))
+    {
+      esp_now_add_peer(&peerInfo);
+    }
+    // Send message
+    esp_err_t result = esp_now_send(broadcastAddress, (const uint8_t *)message.c_str(), message.length());
+
+    delay(100);
+
+    ESP.restart();
+  }
 #else
 #if RGBLED
   pixels.setBrightness(10);
@@ -279,10 +331,6 @@ void setup()
   // Do the same for MIDI Note Off messages.
   MIDI.setHandleNoteOff(handleNoteOff);
 
-  Serial.begin(115200);
-
-  //delay(5000);
-
   // wait until device mounted
   while(!TinyUSBDevice.mounted()) 
     delay(1);
@@ -291,19 +339,8 @@ void setup()
 
   Serial.println("MIDI starting...");
 
-  WiFi.mode(WIFI_MODE_STA);
-  Serial.println(WiFi.macAddress()); // get 84:F7:03:DC:F6:F8
-
-  if(esp_now_init() != ESP_OK) 
-  {
-    Serial.println("Error initializing ESP-NOW");
-  }
-  else
-  {
-    esp_now_register_recv_cb(data_receive);
-  }
 #ifdef ATOMS3
-    AtomLed.drawpix(0x0000ff); // initialize LED to blue
+    AtomLed.drawpix(0xFF0000); // initialize LED to green
     AtomLed.show();
 #else
 #if RGBLED
@@ -313,26 +350,6 @@ void setup()
   digitalWrite(9, HIGH);
 #endif
 #endif
-  pinMode(41, INPUT_PULLUP);
-  if(!digitalRead(41)) // Is button pushed on startup?
-  {
-    // Broadcast a message to every device in range
-    uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    esp_now_peer_info_t peerInfo = {};
-    String message = "EMMMA-K";
-    memcpy(&peerInfo.peer_addr, broadcastAddress, 6);
-    if (!esp_now_is_peer_exist(broadcastAddress))
-    {
-      esp_now_add_peer(&peerInfo);
-    }
-    // Send message
-    esp_err_t result = esp_now_send(broadcastAddress, (const uint8_t *)message.c_str(), message.length());
-
-    while(!digitalRead(41))
-      delay(100); // wait for button to be realeased...
-
-    ESP.restart();
-  }
 }
 
 void loop()
@@ -367,23 +384,23 @@ void loop()
   }
 
   // read any new MIDI messages
-    if(MIDI.read())
+  if(MIDI.read())
+  {
+    uint8_t msg[3];
+    uint8_t type = MIDI.getType();
+    uint8_t data1 = MIDI.getData1();
+    uint8_t data2 = MIDI.getData2();
+    msg[0] = type;
+    msg[1] = data1;
+    msg[2] = data2;
+
+    Serial.printf("%d %d %d\n", type, data1, data2);
+
+    if(returnAddressPointer)
     {
-      uint8_t msg[3];
-      uint8_t type = MIDI.getType();
-      uint8_t data1 = MIDI.getData1();
-      uint8_t data2 = MIDI.getData2();
-      msg[0] = type;
-      msg[1] = data1;
-      msg[2] = data2;
-
-      Serial.printf("%d %d %d\n", type, data1, data2);
-
-      if(returnAddressPointer)
-      {
-        esp_err_t outcome = esp_now_send(returnAddressPointer, (uint8_t *) &msg, sizeof(msg)); 
-      } 
-    }
+      esp_err_t outcome = esp_now_send(returnAddressPointer, (uint8_t *) &msg, sizeof(msg)); 
+    } 
+  }
 }
 
 void handleNoteOn(byte channel, byte pitch, byte velocity)
